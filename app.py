@@ -1,17 +1,113 @@
-# filepath: puzzle_kit/app.py
+#filepath: puzzle_kit/app.py
 """
 ENTROPY-33 Flask Web Gateway
 Handles Phase 3 (Lattice Challenge) and Phase 4 (ZK Verification).
-Can be deployed easily to Render, Heroku, or a VPS.
 """
 from flask import Flask, jsonify, request, send_file
 from lattice_challenge import LatticeChallenge
 from zk_verifier import ZKVerifier
-import json
+import os
+import hashlib
+from PIL import Image
+from stego_injector import get_pixel_hash, derive_key, encrypt_payload, inject_custom_chunk
+from custom_vm import assemble
 
 app = Flask(__name__)
 challenge = LatticeChallenge()
 
+# -----------------------------------------------------------------------------
+# Module-level Boot/Setup Block
+# Runs whenever app.py is imported (by Gunicorn) or run as main.
+# Ensures entropy_stego.png is always generated on the server at startup.
+# -----------------------------------------------------------------------------
+dir_name = os.path.dirname(__file__)
+stego_path = os.path.join(dir_name, "entropy_stego.png")
+
+if not os.path.exists(stego_path):
+    print("[*] Performing first-time server stego-beacon generation...")
+    # Generate temporary baseline PNG
+    temp_baseline = os.path.join(dir_name, "temp_baseline.png")
+    img = Image.new("RGB", (256, 256), color=(40, 44, 52))
+    img.save(temp_baseline)
+    
+    # Load VM assembly program (password: '3301')
+    asm = """
+    IN
+    PUSH 51
+    XOR
+    JZ char2
+    JMP fail
+    char2:
+    IN
+    PUSH 51
+    XOR
+    JZ char3
+    JMP fail
+    char3:
+    IN
+    PUSH 48
+    XOR
+    JZ char4
+    JMP fail
+    char4:
+    IN
+    PUSH 49
+    XOR
+    JZ success
+    JMP fail
+    fail:
+    PUSH 70
+    OUT
+    HALT
+    success:
+    PUSH 104
+    OUT
+    PUSH 116
+    OUT
+    PUSH 116
+    OUT
+    PUSH 112
+    OUT
+    PUSH 58
+    OUT
+    PUSH 47
+    OUT
+    PUSH 47
+    OUT
+    PUSH 108
+    OUT
+    PUSH 97
+    OUT
+    PUSH 116
+    OUT
+    PUSH 116
+    OUT
+    PUSH 105
+    OUT
+    PUSH 99
+    OUT
+    PUSH 101
+    OUT
+    HALT
+    """
+    bytecode = assemble(asm)
+    
+    # Get pixel hash of the baseline image to derive the symmetric key
+    pixel_hash = get_pixel_hash(temp_baseline)
+    key = derive_key(pixel_hash)
+    enc_payload = encrypt_payload(bytecode, key)
+    
+    # Inject the encrypted payload into the custom 'eNtR' chunk
+    inject_custom_chunk(temp_baseline, "eNtR", enc_payload, stego_path)
+    
+    # Clean up temp file
+    if os.path.exists(temp_baseline):
+        os.remove(temp_baseline)
+    print(f"[✓] Server compiled stego-beacon saved to: {stego_path}")
+
+# -----------------------------------------------------------------------------
+# Routes
+# -----------------------------------------------------------------------------
 @app.route("/", methods=["GET"])
 def index():
     return jsonify({
@@ -26,8 +122,6 @@ def index():
 
 @app.route("/stego-beacon", methods=["GET"])
 def get_stego_image():
-    import os
-    stego_path = os.path.join(os.path.dirname(__file__), "entropy_stego.png")
     if not os.path.exists(stego_path):
         return jsonify({"error": "Stego beacon image not yet compiled. Ask host to run setup."}), 500
     return send_file(stego_path, mimetype="image/png")
@@ -87,26 +181,4 @@ def submit_proof():
         return jsonify({"error": str(e)}), 400
 
 if __name__ == "__main__":
-    import os
-    # For local test, pre-generate stego image
-    if not os.path.exists("entropy_stego.png"):
-        from PIL import Image
-        from stego_injector import derive_key, encrypt_payload, embed_payload
-        from custom_vm import assemble
-        
-        # Generate clean baseline and embed bytecode
-        img = Image.new("RGB", (256, 256), color=(40, 44, 52))
-        img.save("entropy_baseline.png")
-        
-        # Load sample assembly to execute password "3301"
-        with open("entropy_baseline.png", "rb") as f:
-            baseline_hash = hashlib.sha256(f.read()).hexdigest()
-            
-        asm = "IN\\nPUSH 51\\nXOR\\nJZ char2\\nJMP fail\\nchar2:\\nIN\\nPUSH 51\\nXOR\\nJZ char3\\nJMP fail\\nchar3:\\nIN\\nPUSH 48\\nXOR\\nJZ char4\\nJMP fail\\nchar4:\\nIN\\nPUSH 49\\nXOR\\nJZ success\\nJMP fail\\nfail:\\nPUSH 70\\nOUT\\nHALT\\nsuccess:\\nPUSH 104\\nOUT\\nPUSH 116\\nOUT\\nPUSH 116\\nOUT\\nPUSH 112\\nOUT\\nPUSH 58\\nOUT\\nPUSH 47\\nOUT\\nPUSH 47\\nOUT\\nPUSH 108\\nOUT\\nPUSH 97\\nOUT\\nPUSH 116\\nOUT\\nPUSH 116\\nOUT\\nPUSH 105\\nOUT\\nPUSH 99\\nOUT\\nPUSH 101\\nOUT\\nHALT"
-        bytecode = assemble(asm.replace("\\n", "\n"))
-        key = derive_key("Silence is golden, entropy is absolute.", baseline_hash)
-        enc_payload = encrypt_payload(bytecode, key)
-        embed_payload("entropy_baseline.png", enc_payload, "entropy_stego.png", "Silence is golden, entropy is absolute.")
-        os.remove("entropy_baseline.png")
-        
     app.run(host="0.0.0.0", port=5000)
