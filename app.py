@@ -1,8 +1,4 @@
-#filepath: puzzle_kit/app.py
-"""
-ENTROPY-33 Flask Web Gateway
-Handles Phase 3 (Lattice Challenge) and Phase 4 (ZK Verification).
-"""
+# filepath: puzzle_kit/app.py
 from flask import Flask, jsonify, request, send_file
 from lattice_challenge import LatticeChallenge
 from zk_verifier import ZKVerifier
@@ -16,21 +12,17 @@ app = Flask(__name__)
 challenge = LatticeChallenge()
 
 # -----------------------------------------------------------------------------
-# Module-level Boot/Setup Block
-# Runs whenever app.py is imported (by Gunicorn) or run as main.
-# Ensures entropy_stego.png is always generated on the server at startup.
+# Module-level Boot/Setup Block (Runs automatically on Render startup)
 # -----------------------------------------------------------------------------
 dir_name = os.path.dirname(__file__)
 stego_path = os.path.join(dir_name, "entropy_stego.png")
 
 if not os.path.exists(stego_path):
     print("[*] Performing first-time server stego-beacon generation...")
-    # Generate temporary baseline PNG
     temp_baseline = os.path.join(dir_name, "temp_baseline.png")
     img = Image.new("RGB", (256, 256), color=(40, 44, 52))
     img.save(temp_baseline)
     
-    # Load VM assembly program (password: '3301')
     asm = """
     IN
     PUSH 51
@@ -92,18 +84,14 @@ if not os.path.exists(stego_path):
     """
     bytecode = assemble(asm)
     
-    # Get pixel hash of the baseline image to derive the symmetric key
     pixel_hash = get_pixel_hash(temp_baseline)
     key = derive_key(pixel_hash)
     enc_payload = encrypt_payload(bytecode, key)
     
-    # Inject the encrypted payload into the custom 'eNtR' chunk
     inject_custom_chunk(temp_baseline, "eNtR", enc_payload, stego_path)
     
-    # Clean up temp file
     if os.path.exists(temp_baseline):
         os.remove(temp_baseline)
-    print(f"[✓] Server compiled stego-beacon saved to: {stego_path}")
 
 # -----------------------------------------------------------------------------
 # Routes
@@ -145,7 +133,6 @@ def submit_secret():
         if not candidate or len(candidate) != challenge.n:
             return jsonify({"error": "Invalid payload format. Must supply a list of size 4."}), 400
         
-        # Verify secret
         if challenge.verify_solution(candidate):
             return jsonify({
                 "status": "UNLOCKED",
@@ -166,7 +153,6 @@ def submit_proof():
         if not transcript or len(transcript) < 80:
             return jsonify({"error": "Transcript must contain at least 80 rounds of proof."}), 400
         
-        # Verify proof
         verifier = ZKVerifier(challenge.A, challenge.b, challenge.q)
         if verifier.verify_proof(transcript):
             return jsonify({
